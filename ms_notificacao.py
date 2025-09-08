@@ -7,7 +7,7 @@ EXCHANGE_NAME = "leilao_control"
 
 def callback(ch, method, properties, body):
     try:
-        lance = json.loads(body)
+        lance = json.loads(body.decode("utf-8"))
         ch.basic_ack(delivery_tag=method.delivery_tag)
         if not lance['venceu']:
             print(f" [x] Mensagem recebida de lance_validado:\n"

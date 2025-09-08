@@ -4,6 +4,7 @@ import base64
 from Crypto.PublicKey import RSA
 from Crypto.Signature import pkcs1_15
 from Crypto.Hash import SHA256
+import os
 
 EXCHANGE_NAME = "leilao_control"
 leiloes_ativos = {}
@@ -20,14 +21,17 @@ def verifica_assinatura(lance, assinatura):
         h = SHA256.new(data)
         pkcs1_15.new(client_public_key).verify(h, assinatura)
         return True
-    except (ValueError, TypeError):
-        print(f"\n [!] Erro ao verificar assinatura de lance (Cliente:{lance['id']}, Leilao:{lance['item']})")
+    except (ValueError, TypeError) as e:
+        print(f"\n [!] Erro ao verificar assinatura de lance (Cliente:{lance['id']}, Leilao:{lance['item']}): {e}")
+        return False
+    except FileNotFoundError:
+        print(f"\n [!] Chave pública do cliente {lance['id']} não encontrada.")
         return False
 
 
 def callback_leiloes(ch, method, properties, body):
     try:
-        leilao = json.loads(body)
+        leilao = json.loads(body.decode("utf-8"))
         ch.basic_ack(delivery_tag=method.delivery_tag)
         leilao_id = leilao['id_leilao']
 
@@ -40,16 +44,16 @@ def callback_leiloes(ch, method, properties, body):
             del leiloes_ativos[leilao_id]
 
             # Se houve algum lance válido, publica vencedor
-            if melhores_lances[leilao_id] is not None:
-                vencedor = melhores_lances[leilao_id]
+            vencedor = melhores_lances.get(leilao_id)
+            if vencedor is not None:
                 vencedor["venceu"] = True
                 message = json.dumps(vencedor, ensure_ascii=False)
-                ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='leilao_vencedor', body=message)
-
-            del melhores_lances[leilao_id]
-            print(f"Leilão encerrado: {leilao_id}")
-    except:
-        print(f"\n [!] Erro ao processar leilao (Leilao:{leilao['id_leilao']})")
+                ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='leilao_vencedor', body=message.encode("utf-8"))
+            if leilao_id in melhores_lances:
+                del melhores_lances[leilao_id]
+                print(f"Leilão encerrado: {leilao_id}")
+    except Exception as e:
+        print(f"\n [!] Erro ao processar leilao: {e}")
 
 
 def callback_lances(ch, method, properties, body):
@@ -61,15 +65,16 @@ def callback_lances(ch, method, properties, body):
         ch.basic_ack(delivery_tag=method.delivery_tag)
 
         if (verifica_assinatura(lance, assinatura) and
-             lance['item'] in leiloes_ativos.keys() and
+             lance['item'] in leiloes_ativos and
              (melhores_lances[lance['item']] is None or
               int(lance['valor']) > int(melhores_lances[lance['item']]['valor']))):
 
             melhores_lances[lance['item']] = lance
             print(f"Lance válido recebido: Cliente {lance['id']} -> R$ {lance['valor']} no leilão {lance['item']}")
-            ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='lance_validado', body=json.dumps(lance))
-    except:
-        print(f"\n [!] Erro ao processar lance (Lance:{lance['id']})")
+            message = json.dumps(lance, ensure_ascii=False)
+            ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='lance_validado', body=message.encode("utf-8"))
+    except Exception as e:
+        print(f"[!] Erro ao processar lance: {e}")
 
 
 connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))

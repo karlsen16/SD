@@ -75,7 +75,7 @@ def atualizar_datas(leiloes):
 def enviar_leilao(leilao, RK):
     try:
         message = json.dumps(leilao, ensure_ascii=False)
-        channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=RK, body=message)
+        channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=RK, body=message.encode("utf-8"))
         print(f"\n [x] Leilao com ID: {leilao['id_leilao']} enviado para {RK}.", end='')
     except Exception as e:
         print(f"\n [!] Erro ao enviar leilão {leilao['id_leilao']} -> {e}")
