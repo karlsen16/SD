@@ -59,7 +59,7 @@ leiloes_init = [
     }
 ]
 EXCHANGE_NAME = "leilao_control"
-TEMPO_BASE = 10
+TEMPO_BASE = 20
 FORMATO_TIME = "%Y-%m-%d %H:%M:%S"
 console = Console()
 
