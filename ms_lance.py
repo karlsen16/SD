@@ -7,10 +7,10 @@ from Crypto.Hash import SHA256
 import os
 
 EXCHANGE_NAME = "leilao_control"
-leiloes_ativos = {}
-melhores_lances = {}
+leiloes_ativos = {}     # dict {id_leilao: melhor lance}
 
 
+# ----- Verificação das Assinaturas -----
 def verifica_assinatura(lance, assinatura):
     try:
         data = json.dumps(lance, ensure_ascii=False).encode()
@@ -29,53 +29,52 @@ def verifica_assinatura(lance, assinatura):
         return False
 
 
+# ----- Controle dos Leiloes -----
 def callback_leiloes(ch, method, properties, body):
-    try:
-        leilao = json.loads(body.decode("utf-8"))
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-        leilao_id = leilao['id_leilao']
+    leilao = json.loads(body.decode("utf-8"))
+    leilao_id = leilao['id_leilao']
 
-        if leilao['status'] == "ativo":
-            leiloes_ativos[leilao_id] = leilao
-            melhores_lances[leilao_id] = None
-            print(f"Novo leilão ativo: {leilao_id}")
+    if leilao['status'] == "ativo":
+        #Lances são atualizados na callback_lances
+        leiloes_ativos[leilao_id] = None
+        print(f" [v] Novo leilão ativo: {leilao_id}")
 
-        elif leilao['status'] == "encerrado":
-            del leiloes_ativos[leilao_id]
-
-            # Se houve algum lance válido, publica vencedor
-            vencedor = melhores_lances.get(leilao_id)
-            if vencedor is not None:
-                vencedor["venceu"] = True
-                message = json.dumps(vencedor, ensure_ascii=False)
-                ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='leilao_vencedor', body=message.encode("utf-8"))
-            if leilao_id in melhores_lances:
-                del melhores_lances[leilao_id]
-                print(f"Leilão encerrado: {leilao_id}")
-    except Exception as e:
-        print(f"\n [!] Erro ao processar leilao: {e}")
+    elif leilao['status'] == "encerrado":
+        vencedor = leiloes_ativos[leilao_id]
+        if vencedor is not None:
+            vencedor['venceu'] = True
+            message = json.dumps(vencedor, ensure_ascii=False)
+            ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='leilao_vencedor', body=message.encode("utf-8"))
+        del leiloes_ativos[leilao_id]
+        print(f" [x] Leilão encerrado: {leilao_id}")
+    ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
+# ----- Controle dos Lances -----
 def callback_lances(ch, method, properties, body):
-    try:
-        body_str = body.decode('utf-8')
-        json_part, assinatura_b64 = body_str.split("||")
-        lance = json.loads(json_part)
-        assinatura = base64.b64decode(assinatura_b64)
-        ch.basic_ack(delivery_tag=method.delivery_tag)
+    body_str = body.decode('utf-8')
+    #Lances são recebidos no formato: Lance(json string) + "||" + Assinatura
+    json_part, assinatura_b64 = body_str.split("||")
+    lance = json.loads(json_part)
+    assinatura = base64.b64decode(assinatura_b64)
+    ch.basic_ack(delivery_tag=method.delivery_tag)
 
-        if (verifica_assinatura(lance, assinatura) and
-             lance['item'] in leiloes_ativos and
-             (melhores_lances[lance['item']] is None or
-              int(lance['valor']) > int(melhores_lances[lance['item']]['valor']))):
+    #Se a assinatura confere, foi um lance em um evento ativo no momento e
+    #não existem lances ou esse lance supera o valor anterior:
+    if (verifica_assinatura(lance, assinatura) and
+         lance['item'] in leiloes_ativos and
+         (leiloes_ativos[lance['item']] is None or
+          int(lance['valor']) > int(leiloes_ativos[lance['item']]['valor']))):
 
-            melhores_lances[lance['item']] = lance
-            print(f"Lance válido recebido: Cliente {lance['id']} -> R$ {lance['valor']} no leilão {lance['item']}")
-            message = json.dumps(lance, ensure_ascii=False)
-            ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='lance_validado', body=message.encode("utf-8"))
-    except Exception as e:
-        print(f"[!] Erro ao processar lance: {e}")
+        #Cria o campo 'venceu', inicialmente com False
+        lance['venceu'] = False
+        leiloes_ativos[lance['item']] = lance
+        print(f" [>] Lance válido recebido: Cliente {lance['id']} -> R$ {lance['valor']} no leilão {lance['item']}")
+        message = json.dumps(lance, ensure_ascii=False)
+        ch.basic_publish(exchange=EXCHANGE_NAME, routing_key='lance_validado', body=message.encode("utf-8"))
 
+
+# ----------
 
 connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
 channel = connection.channel()

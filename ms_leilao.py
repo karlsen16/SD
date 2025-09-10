@@ -3,7 +3,9 @@ from datetime import datetime, timedelta
 import pika
 import json
 import time
-
+import os
+from rich.console import Console
+from rich.table import Table
 
 leiloes_init = [
     {
@@ -59,8 +61,33 @@ leiloes_init = [
 EXCHANGE_NAME = "leilao_control"
 TEMPO_BASE = 10
 FORMATO_TIME = "%Y-%m-%d %H:%M:%S"
+console = Console()
 
 
+# ----- Interface do Terminal -----
+def clear_terminal():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
+
+def mostrar_leiloes():
+    clear_terminal()
+    table = Table(title="Leilões")
+
+    table.add_column("ID", justify="center", style="cyan", no_wrap=True)
+    table.add_column("Inicio", justify="center", style="green")
+    table.add_column("Fim", style="magenta")
+    table.add_column("Status", justify="right", style="yellow")
+
+    for leilao in leiloes:
+        table.add_row(leilao['id_leilao'], leilao['inicio'][-8:], leilao['fim'][11:19], leilao['status'])
+
+    console.print(table)
+    print(f"\rHorário: {datetime.now().strftime('%H:%M:%S')}", end='', flush=True)
+
+
+# ----- Inicialização -----
+#Gera tempos aleatórios para inicio e fim dos leiloes
+#com base no horário atual
 def atualizar_datas(leiloes):
     agora = datetime.now()
     for leilao in leiloes:
@@ -72,23 +99,20 @@ def atualizar_datas(leiloes):
     return sorted(leiloes, key=lambda x: datetime.strptime(x["inicio"], FORMATO_TIME))
 
 
+# ----- Controle dos Envios -----
 def enviar_leilao(leilao, RK):
-    try:
-        message = json.dumps(leilao, ensure_ascii=False)
-        channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=RK, body=message.encode("utf-8"))
-        print(f"\n [x] Leilao com ID: {leilao['id_leilao']} enviado para {RK}.", end='')
-    except Exception as e:
-        print(f"\n [!] Erro ao enviar leilão {leilao['id_leilao']} -> {e}")
+    message = json.dumps(leilao, ensure_ascii=False)
+    channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=RK, body=message.encode("utf-8"))
+    print(f"\n [x] Leilao com ID: {leilao['id_leilao']} enviado para {RK}.", end='')
 
 
 def iniciar(leiloes):
-    print("LEILÃO INICIADO!!")
+    mostrar_leiloes()
     try:
         while leiloes:
             agora = datetime.now()
             print(f"\rHorário: {agora.strftime('%H:%M:%S')}", end='', flush=True)
 
-            pula_linha = False
             for leilao in leiloes[:]:
                 inicio = datetime.strptime(leilao["inicio"], FORMATO_TIME)
                 fim = datetime.strptime(leilao["fim"], FORMATO_TIME)
@@ -96,15 +120,13 @@ def iniciar(leiloes):
                 if agora >= inicio and leilao['status'] not in ["ativo", "encerrado"]:
                     leilao["status"] = "ativo"
                     enviar_leilao(leilao, "leilao_iniciado")
-                    pula_linha = True
+                    mostrar_leiloes()
 
                 if agora >= fim and leilao['status'] == "ativo":
                     leilao["status"] = "encerrado"
                     enviar_leilao(leilao, "leilao_finalizado")
                     leiloes.remove(leilao)
-                    pula_linha = True
-            if pula_linha:
-                print()
+                    mostrar_leiloes()
             time.sleep(1)
     finally:
         for leilao in leiloes:
@@ -115,12 +137,14 @@ def iniciar(leiloes):
         print("\n [*] Conexão com RabbitMQ encerrada.")
 
 
-leiloes = atualizar_datas(leiloes_init)
-for item in leiloes:
-    print(item["id_leilao"], item["inicio"], item["fim"])
+# ----------
 
+leiloes = atualizar_datas(leiloes_init)
 connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
 channel = connection.channel()
 channel.exchange_declare(exchange=EXCHANGE_NAME, exchange_type="direct")
+
+if "TERM" not in os.environ:
+    os.environ["TERM"] = "xterm-256color"
 
 iniciar(leiloes)

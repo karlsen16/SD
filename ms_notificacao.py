@@ -5,22 +5,27 @@ import json
 EXCHANGE_NAME = "leilao_control"
 
 
+# ----- Controle dos Envios -----
+#Recebe lances válidos e os envia para a fila do respectivo leilao:
+#Lance {
+#     "item": id do leilao,
+#     "valor": valor do lance,
+#     "id": id do cliente que fez o lance,
+#     "venceu" True ou False (controlado por ms_lance)
+# }
 def callback(ch, method, properties, body):
-    try:
-        lance = json.loads(body.decode("utf-8"))
-        ch.basic_ack(delivery_tag=method.delivery_tag)
-        if not lance['venceu']:
-            print(f" [x] Mensagem recebida de lance_validado:\n"
-                  f" Cliente ({lance['id']}) deu lance de valor {lance['valor']}\n"
-                  f" no item de id {lance['item']}!")
-        else:
-            print(f" [x] Mensagem recebida de leilao_vencedor:\n"
-                  f" PARABÉNS Cliente {lance['id']}!! Você venceu o leilao do item {lance['item']}!\n"
-                  f" O valor {lance['valor']} foi o mais alto e garantiu o arremate.")
-        channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=f"leilao_{lance['item']}", body=body)
-    except Exception as e:
-        print(f"\n [!] Erro ao enviar lance {lance['item']} -> {e}")
+    lance = json.loads(body.decode("utf-8"))
 
+    if not lance['venceu']:
+        print(f" [x] Mensagem recebida de lance_validado.")
+    else:
+        print(f" [v] Mensagem recebida de leilao_vencedor.")
+
+    channel.basic_publish(exchange=EXCHANGE_NAME, routing_key=f"leilao_{lance['item']}", body=body)
+    ch.basic_ack(delivery_tag=method.delivery_tag)
+
+
+# ----------
 
 connection = pika.BlockingConnection(pika.ConnectionParameters("localhost"))
 channel = connection.channel()
