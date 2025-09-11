@@ -13,35 +13,26 @@ from rich.table import Table
 
 EXCHANGE_NAME = "leilao_control"
 leiloes_ativos = {}                 # dict {id_leilao: leilao com o campo "lances" adicionado}
-data_lock = threading.Lock()        # mutex para acessar os dois dict acima, pois são compartilhados entre as 3 threads
+data_lock = threading.Lock()        # mutex para acessar o dict acima, pois é compartilhado entre as 3 threads
 registration_queue = queue.Queue()  # fila para registrar pedidos de escuta em leilões específicos
 stop_event = threading.Event()      # evento para sinalizar fim de execução para threads em paralelo
 console = Console()                 # para prints da interface
 
 
 # ----- Assinaturas -----
-def carregar_ou_gerar_chaves(cliente_id):
+def gerar_chaves(cliente_id):
+    key = RSA.generate(2048)
+    private_key = key
+
     pasta_cliente = os.path.join("Clientes", cliente_id)
     os.makedirs(pasta_cliente, exist_ok=True)
-
-    priv_path = os.path.join(pasta_cliente, "private_key.der")
     pub_path = os.path.join(pasta_cliente, "public_key.der")
 
-    if os.path.exists(priv_path) and os.path.exists(pub_path):
-        with open(priv_path, "rb") as f:
-            private_key = RSA.import_key(f.read())
-        with open(pub_path, "rb") as f:
-            public_key = RSA.import_key(f.read())
-    else:
-        key = RSA.generate(2048)
-        private_key = key
-        public_key = key.publickey()
-        with open(priv_path, "wb") as f:
-            f.write(private_key.export_key(format="DER"))
-        with open(pub_path, "wb") as f:
-            f.write(public_key.export_key(format="DER"))
+    public_key = key.publickey()
+    with open(pub_path, "wb") as f:
+        f.write(public_key.export_key(format="DER"))
 
-    return private_key, public_key
+    return private_key
 
 
 def assinar_lance(lance, private_key):
@@ -71,12 +62,13 @@ def callback_notificacoes(ch, method, properties, body):
     lance = json.loads(body.decode("utf-8"))
 
     if lance.get("venceu"):
-        print(f"\nCliente {lance['id']} venceu o leilão {lance['item']} com lance R$ {lance['valor']}")
         with data_lock:
-            leiloes_ativos.pop(lance['item'], None)
+            leiloes_ativos.pop(lance['item'])
+        print(f"\nCliente {lance['id']} venceu o leilão {lance['item']} com lance R$ {lance['valor']}")
     else:
+        with data_lock:
+            leiloes_ativos[lance['item']]['lances'].append(lance)
         print(f"\nNovo lance: Cliente {lance['id']} deu um lance de R$ {lance['valor']} no leilão {lance['item']}")
-        leiloes_ativos[lance['item']]['lances'].append(lance)
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
 
@@ -134,17 +126,12 @@ def notification_worker(connection_params):
 
 # ----- Interface -----
 def maior_lance(leilao_id):
-    leilao = leiloes_ativos.get(leilao_id)
-    # if not leilao:
-    #     return None
+    with data_lock:
+        leilao = leiloes_ativos.get(leilao_id)
 
     lances = leilao.get("lances", [])
     if not lances:
         return None
-
-    # lances_validos = [l for l in lances if isinstance(l, dict) and "valor" in l]
-    # if not lances_validos:
-    #     return None
 
     maior = max(lances, key=lambda x: int(x["valor"]))
     return str(maior["valor"])
@@ -159,7 +146,9 @@ def mostrar_leiloes():
     table.add_column("Status", justify="right", style="yellow")
     table.add_column("Lances", justify="right", style="white")
 
-    for leilao in leiloes_ativos.values():
+    with data_lock:
+        ativos = leiloes_ativos.values()
+    for leilao in ativos:
         lance_valor = maior_lance(leilao['id_leilao'])
         if not lance_valor:
             lance_valor = "0"
@@ -182,11 +171,7 @@ def interface_usuario(cliente_id, private_key, connection_params):
             escolha = input("> ").strip()
 
             if escolha == "1":
-                with data_lock:
-                    if not leiloes_ativos:
-                        print("Nenhum leilão ativo.")
-                    else:
-                        mostrar_leiloes()
+                mostrar_leiloes()
 
             elif escolha == "2":
                 with data_lock:
@@ -214,8 +199,8 @@ def interface_usuario(cliente_id, private_key, connection_params):
 
                 with data_lock:
                     leilao = leiloes_ativos.get(leilao_id)
-                    if leilao:
-                        leilao['lances'].append({"id": cliente_id, "valor": valor, "item": leilao_id})
+                if leilao:
+                    leilao['lances'].append({"id": cliente_id, "valor": valor, "item": leilao_id})
 
                 registration_queue.put(leilao_id)
 
@@ -235,7 +220,7 @@ def interface_usuario(cliente_id, private_key, connection_params):
 # ----- Main -----
 def main():
     cliente_id = input("Digite seu ID: ")
-    private_key, _ = carregar_ou_gerar_chaves(cliente_id)
+    private_key = gerar_chaves(cliente_id)
 
     connection_params = pika.ConnectionParameters("localhost")
 
