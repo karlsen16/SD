@@ -50,7 +50,7 @@ def assinar_lance(lance, private_key):
 # ----- Controle dos Leiloes Iniciados -----
 def callback_leiloes(ch, method, properties, body):
     leilao = json.loads(body.decode("utf-8"))
-    leilao["lances"] = []
+    leilao['melhor lance'] = None
 
     with data_lock:
         leiloes_ativos[leilao["id_leilao"]] = leilao
@@ -67,7 +67,7 @@ def callback_notificacoes(ch, method, properties, body):
         print(f"\nCliente {lance['id']} venceu o leilão {lance['item']} com lance R$ {lance['valor']}")
     else:
         with data_lock:
-            leiloes_ativos[lance['item']]['lances'].append(lance)
+            leiloes_ativos[lance['item']]['melhor lance'] = lance
         print(f"\nNovo lance: Cliente {lance['id']} deu um lance de R$ {lance['valor']} no leilão {lance['item']}")
     ch.basic_ack(delivery_tag=method.delivery_tag)
 
@@ -84,7 +84,9 @@ def leilao_worker(connection_params):
     ch.basic_consume(queue=queue_name, on_message_callback=callback_leiloes)
 
     try:
-        ch.start_consuming()
+        while not stop_event.is_set():
+            conn.process_data_events(time_limit=1)
+            time.sleep(0.1)
     finally:
         try:
             conn.close()
@@ -125,18 +127,6 @@ def notification_worker(connection_params):
 
 
 # ----- Interface -----
-def maior_lance(leilao_id):
-    with data_lock:
-        leilao = leiloes_ativos.get(leilao_id)
-
-    lances = leilao.get("lances", [])
-    if not lances:
-        return None
-
-    maior = max(lances, key=lambda x: int(x["valor"]))
-    return str(maior["valor"])
-
-
 def mostrar_leiloes():
     table = Table(title="Leilões")
 
@@ -149,9 +139,10 @@ def mostrar_leiloes():
     with data_lock:
         ativos = leiloes_ativos.values()
     for leilao in ativos:
-        lance_valor = maior_lance(leilao['id_leilao'])
-        if not lance_valor:
+        if leilao['melhor lance'] is None:
             lance_valor = "0"
+        else:
+            lance_valor = leilao['melhor lance']['valor']
         table.add_row(leilao['id_leilao'], leilao['inicio'][-8:], leilao['fim'][11:19], leilao['status'], "R$ " + lance_valor)
 
     console.print(table)
@@ -191,21 +182,16 @@ def interface_usuario(cliente_id, private_key, connection_params):
                     "item": leilao_id
                 }
 
+                registration_queue.put(leilao_id)
                 mensagem = assinar_lance(lance, private_key)
                 ch_pub.basic_publish(exchange=EXCHANGE_NAME,
                                          routing_key="lance_realizado",
                                          body=mensagem.encode("utf-8"))
                 print(f"[UI] Lance enviado: R$ {valor} no leilão {leilao_id}")
 
-                with data_lock:
-                    leilao = leiloes_ativos.get(leilao_id)
-                if leilao:
-                    leilao['lances'].append({"id": cliente_id, "valor": valor, "item": leilao_id})
-
-                registration_queue.put(leilao_id)
-
             elif escolha == "3":
                 print("Saindo...")
+                stop_event.set()
                 break
             else:
                 print("Opção inválida!")
@@ -214,7 +200,6 @@ def interface_usuario(cliente_id, private_key, connection_params):
             conn_pub.close()
         except Exception:
             pass
-        stop_event.set()
 
 
 # ----- Main -----
@@ -235,11 +220,6 @@ def main():
 
     #Interface para exibição dos leilões e realização dos lances
     interface_usuario(cliente_id, private_key, connection_params)
-
-    print("Aguardando término das threads...")
-    t1.join(timeout=2)
-    t2.join(timeout=2)
-    print("Encerrado.")
 
 
 if __name__ == "__main__":
