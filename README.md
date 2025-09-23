@@ -5,7 +5,7 @@ Cada pasta (`avaliacao1`, `avaliacao2`, ...) contém seus próprios arquivos e d
 
 ## Estrutura do Repositório
  - avaliacao1/   # Arquitetura Orientada a Eventos e Criptografia Assimétrica
-   - Precisa ter o RabbitMQ instalado
+   - Precisa ter o RabbitMQ instalado.
 
  - avaliacao2/   # PyRO  
 
