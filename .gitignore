@@ -3,6 +3,6 @@ __pycache__/
 .venv/
 *.pdf
 *.mkv
-Clientes/
-keys_exemplos/
-tutorial/
+avaliacao1/Clientes/
+avaliacao1/keys_exemplos/
+avaliacao1/tutorial/
