@@ -4,13 +4,14 @@ Este repositório reúne os trabalhos desenvolvidos em diferentes avaliações d
 Cada pasta (`avaliacao1`, `avaliacao2`, ...) contém seus próprios arquivos e dependências.
 
 ## Estrutura do Repositório
-avaliacao1/   # Arquitetura Orientada a Eventos e Criptografia Assimétrica
+ - avaliacao1/   # Arquitetura Orientada a Eventos e Criptografia Assimétrica
+   - Precisa ter o RabbitMQ instalado
 
-avaliacao2/   # PyRO  
+ - avaliacao2/   # PyRO  
 
-avaliacao3/   # TODO
+ - avaliacao3/   # TODO
 
-avaliacao4/   # TODO  
+ - avaliacao4/   # TODO  
 
 
 ## Dependências
