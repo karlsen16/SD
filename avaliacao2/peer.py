@@ -16,7 +16,7 @@ pedidos_lock = threading.Lock() # mutex para acessar a fila acima
 liberar = threading.Event()     # avisa a thread usando o recurso que deve finalizar e liberar o recurso
 liberado = threading.Event()    # segura a thread principal até a liberação do recurso acontecer
 saiu_da_sc = threading.Event()  # recurso livre para o próximo usar
-console = Console()             # para prints da interface
+console = Console()             # para print da interface
 
 # ----- CONFIG -----
 FORMAT_DATETIME = '%Y-%m-%d %H:%M:%S.%f'
