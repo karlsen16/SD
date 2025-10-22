@@ -10,14 +10,23 @@ from rich.table import Table
 peers_ativos = {}                       # dict de dict {nome: {status, last_beat}}
 ativos_lock = threading.Lock()          # mutex para acessar o dict acima
 registro = threading.Event()            # sincroniza a primeira atribuição de "status" com o início dos heartbeats
-pedidos = []                            # fila com os pedidos para receber o recurso
-pedidos_lock = threading.Lock()         # mutex para acessar a fila acima
-status_holder = "RELEASED"              # status atual
+
+esperando_por_peers = []                # fila dos peers que estou esperando resposta
+espera_lock = threading.Lock()          # mutex para acessar a fila acima
+
+respostas_pendentes = []                # fila dos peers que tenho que responder
+respostas_lock = threading.Lock()       # mutex para acessar a fila acima
+
+meu_status = "RELEASED"                 # status atual
 status_lock = threading.Lock()          # mutex para acessar o valor acima
+
+meu_pedido = None                       # timestamp do meu pedido mais antigo
+pedido_lock = threading.Lock()          # mutex para acessar o valor acima
+
 liberar = threading.Event()             # avisa a thread usando o recurso que deve finalizar e liberar o recurso
 liberado = threading.Event()            # segura a thread principal até a liberação do recurso acontecer
-proximo_na_lista = threading.Event()    # recurso livre para o próximo usar
-saiu = threading.Event()                # alguem saiu da SC
+minha_vez = threading.Event()           # lista de espera está vazia
+
 console = Console()                     # para print da interface
 
 # ----- CONFIG -----
@@ -25,13 +34,13 @@ FORMAT_DATETIME = '%Y-%m-%d %H:%M:%S.%f'
 HEARTBEAT_INTERVAL = 1
 CLEANUP_INTERVAL = 3
 TIMEOUT_BEATS = 5
-TIMEOUT_BROADCAST = 5.0
+TIMEOUT_ACAO = 10
 LIMITE_USO_RECURSO = 30
 # ------------------
 
 # ----- Utilitários -----
 def set_status(op):
-    global status_holder
+    global meu_status
     if op == "r":
         novo = "RELEASED"
     elif op == "w":
@@ -42,12 +51,20 @@ def set_status(op):
         print("Erro ao alterar status.")
         return
     with status_lock:
-        status_holder = novo
+        meu_status = novo
 
 
 def get_status():
     with status_lock:
-        return status_holder
+        return meu_status
+
+
+def set_pedido(pedido=None):
+    global meu_pedido
+    with pedido_lock:
+        if pedido is not None and meu_pedido is not None:
+            return
+        meu_pedido = pedido
 
 
 def peer_que_possui_recurso():
@@ -58,61 +75,83 @@ def peer_que_possui_recurso():
     return None
 
 
-def sou_o_mais_antigo(peer_name, client):
-    with pedidos_lock:
-        meu_pedido = next((t for t, p in pedidos if p == client), None)
-        pedido_peer = (t for t, p in pedidos if p == peer_name)
-    if meu_pedido is None:
+def sou_o_mais_antigo(client, peer_name, timestamp):
+    with pedido_lock:
+        pedido = meu_pedido
+    if pedido is None:
         return False
-    elif meu_pedido == pedido_peer:
+    elif pedido == timestamp:
         return client < peer_name
-    return meu_pedido < pedido_peer
+    return pedido < timestamp
 
 
-def proximo_pedido():
-    with pedidos_lock:
-        if pedidos:
-            return pedidos[0][1]
-        else:
-            return None
+def adicionar_na_lista(peer_name, op):
+    if op == "e":
+        with espera_lock:
+            if any(p == peer_name for p in esperando_por_peers):
+                return
+            esperando_por_peers.append(peer_name)
+    elif op == "p":
+        with respostas_lock:
+            if any(p == peer_name for p in respostas_pendentes):
+                return
+            respostas_pendentes.append(peer_name)
+    else:
+        print("Erro ao adicionar nas listas.")
 
 
-def adicionar_pedido(peer_name, timestamp):
-    with pedidos_lock:
-        if any(p[1] == peer_name for p in pedidos):
-            return
-        pedidos.append((timestamp, peer_name))
-        pedidos.sort(key=lambda x: x[0])
-
-
-def remover_pedido(peer_name):
-    global pedidos
-    with pedidos_lock:
-        pedidos = [p for p in pedidos if p[1] != peer_name]
+def remover_da_lista(peer_name, op):
+    retorno = False
+    if op == "a":
+        with espera_lock:
+            if peer_name in esperando_por_peers:
+                esperando_por_peers.remove(peer_name)
+        with respostas_lock:
+            if peer_name in respostas_pendentes:
+                respostas_pendentes.remove(peer_name)
+    elif op == "e":
+        with espera_lock:
+            if peer_name in esperando_por_peers:
+                esperando_por_peers.remove(peer_name)
+            if esperando_por_peers:
+                retorno = True
+    elif op == "p":
+        with respostas_lock:
+            if peer_name in respostas_pendentes:
+                respostas_pendentes.remove(peer_name)
+            if respostas_pendentes:
+                retorno = True
+    else:
+        print("Erro ao remover das listas.")
+    return retorno
 
 
 # ----- Ações -----
 def pedir_recurso(client):
     set_status('w')
     def solicitar_sc(client):
-        timestamp = datetime.now().strftime(FORMAT_DATETIME)
+        timestamp = datetime.now()
+        set_pedido(timestamp)
+        timestamp = timestamp.strftime(FORMAT_DATETIME)
+        with ativos_lock:
+            peers = list(peers_ativos.keys())
+        if client in peers:
+            peers.remove(client)
+
         concedido = False
         while not concedido:
-            concedido = broadcast_to_peers("requisitar", client, timestamp, timeout=True)
+            concedido = executar_acao("requisitar", peers, client, timestamp)
             if concedido:
-                time.sleep(HEARTBEAT_INTERVAL)
-                if peer_que_possui_recurso() is None and proximo_pedido() == client:
-                    entrar_sc(client)
-                    break
-                else:
-                    concedido = False
-            proximo_na_lista.wait(timeout=LIMITE_USO_RECURSO)
+                entrar_sc(client)
+                break
+            minha_vez.wait(timeout=LIMITE_USO_RECURSO*5)
     threading.Thread(target=solicitar_sc, args=(client,), daemon=True).start()
 
 
 def entrar_sc(client):
-    proximo_na_lista.clear()
     set_status('h')
+    minha_vez.clear()
+    set_pedido()
     print("Ganhei permissão para usar o recurso!")
     threading.Thread(target=usar_recurso, args=(client, LIMITE_USO_RECURSO,), daemon=True).start()
 
@@ -126,28 +165,26 @@ def usar_recurso(client, tempo):
             break
         print("\r(" + "#" * i + "." * (tempo - i) + ")", flush=True, end="")
         time.sleep(1)
-    print("DONE!")
+    print("\nDONE!")
     sair_sc(client)
     if flag:
         liberado.set()
 
 
 def sair_sc(client):
-    print("Avisando peers que recurso está livre...")
-    broadcast_to_peers("sair", client)
-    saiu.wait(timeout=LIMITE_USO_RECURSO)
     set_status('r')
-    proximo_na_lista = proximo_pedido()
-    if proximo_na_lista is not None:
-        Pyro5.api.Proxy(f"PYRONAME:{proximo_na_lista}").proximo()
-    saiu.clear()
+    print("Avisando peers que recurso está livre...")
+    with respostas_lock:
+        lista = respostas_pendentes.copy()
+    executar_acao("responder", lista, client)
+    print("\nDONE!")
 
 
 def liberar_recurso():
     tenho_recurso = get_status() == "HELD"
     if tenho_recurso:
         liberar.set()
-        liberado.wait(timeout=TIMEOUT_BROADCAST)
+        liberado.wait(timeout=TIMEOUT_ACAO)
         print("Recurso liberado!")
         liberar.clear()
         liberado.clear()
@@ -156,29 +193,26 @@ def liberar_recurso():
 
 
 # ----- Comunicação -----
-def broadcast_to_peers(method_name, *args, timeout=False, check_ns=False):
+def executar_acao(method_name, lista, *args):
     flag = True
-    if check_ns:
-        ns = Pyro5.api.locate_ns()
-        lista = list(ns.list().keys())
-        lista.remove("Pyro.NameServer")
-    else:
-        with ativos_lock:
-            lista = peers_ativos.keys()
     for peer_name in lista:
         try:
             with Pyro5.api.Proxy(f"PYRONAME:{peer_name}") as peer:
-                if timeout:
-                    peer._pyroTimeout = TIMEOUT_BROADCAST
+                peer._pyroTimeout = TIMEOUT_ACAO
                 try:
                     method = getattr(peer, method_name)
                     if not method(*args):
                         flag = False
+                        if method_name == "requisitar":
+                            adicionar_na_lista(peer_name, 'e')
+                    if method_name == "responder":
+                        remover_da_lista(peer_name, 'p')
                 except Pyro5.errors.TimeoutError:
-                    print(f"{peer} timeout no broadcast.")
+                    print(f"{peer} timeout ao {method_name}.")
                     with ativos_lock:
                         peers_ativos.pop(peer, None)
-                    remover_pedido(peer)
+                    if method_name == "requisitar":
+                        remover_da_lista(peer_name, 'e')
         except:
             continue
     return flag
@@ -188,21 +222,16 @@ def peers_worker(client):
     @Pyro5.api.expose
     class ControlePeers(object):
         def requisitar(self, peer_name, timestamp):
-            adicionar_pedido(peer_name, datetime.strptime(timestamp, FORMAT_DATETIME))
             if (get_status() == "HELD" or
-                sou_o_mais_antigo(peer_name, client)):
+                sou_o_mais_antigo(client, peer_name, timestamp)):
+                adicionar_na_lista(peer_name, 'p')
                 return False
             return True
 
         @Pyro5.api.oneway
-        def sair(self, peer_name):
-            remover_pedido(peer_name)
-            if get_status() == "HELD":
-                saiu.set()
-
-        @Pyro5.api.oneway
-        def proximo(self):
-            proximo_na_lista.set()
+        def responder(self, peer_name):
+            if not remover_da_lista(peer_name, 'e'):
+                minha_vez.set()
 
         @Pyro5.api.oneway
         def heartbeat(self, peer_name, peer_status, timestamp):
@@ -226,21 +255,10 @@ def mostrar_ativos(client):
     table.add_column("ID", justify="center", style="cyan")
     table.add_column("Status", justify="center", style="green")
     table.add_column("Heartbeat", style="magenta")
-    table.add_column("Request", justify="center", style="orange_red1")
-
-    link = {}
-    with pedidos_lock:
-        for p in pedidos:
-            link[p[1]] = p[0].strftime('%H:%M:%S.%f')
 
     with ativos_lock:
         for peer, info in peers_ativos.items():
-            if peer not in link.keys():
-                req = "-"
-            else:
-                req = link[peer]
-            table.add_row(peer, info['status'], info['last_beat'], req)
-
+            table.add_row(peer, info['status'], info['last_beat'])
     console.print(table)
 
 def interface_usuario(client):
@@ -276,18 +294,26 @@ def interface_usuario(client):
 # ----- Manutenção -----
 def heart(client):
     registro.wait()
-    broadcast_to_peers("heartbeat", client, get_status(), datetime.now().strftime(FORMAT_DATETIME), check_ns=True)
+    ns = Pyro5.api.locate_ns()
+    lista = list(ns.list().keys())
+    lista.remove("Pyro.NameServer")
+    executar_acao("heartbeat", lista, client, get_status(), datetime.now().strftime(FORMAT_DATETIME))
 
 
 def cleanup(client):
     with ativos_lock:
-        for peer in list(peers_ativos.keys()):
-            lb = datetime.strptime(peers_ativos[peer]['last_beat'], FORMAT_DATETIME)
-            agora = datetime.now()
-            if (agora - lb).total_seconds() > TIMEOUT_BEATS:
-                peers_ativos.pop(peer, None)
-                remover_pedido(peer)
-                print(f"Peer removido por timeout: {peer}")
+        lista = {peer: peers_ativos[peer]['last_beat'] for peer, data in peers_ativos.items()}
+    agora = datetime.now()
+    for nome_peer, last_beat in lista.items():
+        last_beat_obj = datetime.strptime(last_beat, FORMAT_DATETIME)
+        if (agora - last_beat_obj).total_seconds() > TIMEOUT_BEATS:
+            with ativos_lock:
+                peers_ativos.pop(nome_peer, None)
+            remover_da_lista(nome_peer, 'a')
+            print(f"Peer removido por timeout: {nome_peer}")
+            minha_vez.set()
+            time.sleep(0.2)
+            minha_vez.clear()
 
 
 # ----- Inicialização e Main -----
@@ -328,12 +354,9 @@ def main():
     scheduler.add_job(heart, 'interval', seconds=HEARTBEAT_INTERVAL, args=[client_name], max_instances=1)
     scheduler.add_job(cleanup, 'interval', seconds=CLEANUP_INTERVAL, args=[client_name], max_instances=1)
 
-    # Thread para escutar peers
     threading.Thread(target=peers_worker, args=(client_name,), daemon=True).start()
 
-    # Interface para exibição dos peers ativos e requisição/liberação do recurso
     interface_usuario(client_name)
-
 
 if __name__ == "__main__":
     main()
