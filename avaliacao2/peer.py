@@ -25,7 +25,7 @@ pedido_lock = threading.Lock()          # mutex para acessar o valor acima
 
 liberar = threading.Event()             # avisa a thread usando o recurso que deve finalizar e liberar o recurso
 liberado = threading.Event()            # segura a thread principal até a liberação do recurso acontecer
-minha_vez = threading.Event()           # lista de espera está vazia
+minha_vez = threading.Event()           # lista de espera esta vazia
 
 console = Console()                     # para print da interface
 
