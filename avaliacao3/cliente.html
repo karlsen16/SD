@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8" />
+    <title>Cliente</title>
+
+<style>
+body {
+    background: #181818;
+    color: #eee;
+    font-family: monospace;
+    padding: 20px;
+}
+
+h1, h2 {
+    color: #00e5ff;
+}
+
+.rich-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    margin-top: 15px;
+    box-shadow: 0 0 10px #000;
+}
+
+.rich-table th {
+    background: #222;
+    padding: 8px;
+    border: 1px solid #444;
+    text-transform: uppercase;
+    font-size: 13px;
+}
+
+.rich-table td {
+    padding: 8px;
+    border: 1px solid #333;
+    text-align: center;
+    font-size: 14px;
+}
+
+.rich-cyan { color: #00e5ff; }
+.rich-green { color: #00ff66; }
+.rich-magenta { color: #ff66ff; }
+.rich-yellow { color: #ffe600; }
+.rich-white { color: #ffffff; }
+
+pre {
+    background: #111;
+    padding: 10px;
+    border: 1px solid #444;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.controls { display:flex; gap:12px; align-items:center; margin-bottom:8px; }
+input[type="text"], input[type="time"], input[type="number"] { padding:6px; border-radius:4px; border:1px solid #333; background:#0f0f0f; color:#eee; }
+button { padding:6px 10px; border-radius:6px; border:none; background:#00aaff; color:#001; cursor:pointer; font-weight:bold; }
+label { font-size:13px; }
+.small { font-size:12px; color:#bbb; }
+
+#clienteArea {
+    margin-bottom: 20px;
+    padding: 10px;
+    border: 1px solid #333;
+    background: #0f0f0f;
+}
+.msg {
+    margin-top: 8px;
+    font-size: 13px;
+}
+</style>
+
+</head>
+
+<body>
+    <h1>Cliente</h1>
+
+    <!-- ======================= -->
+    <!-- CONEXÃO DO CLIENTE SSE -->
+    <!-- ======================= -->
+    <div id="clienteArea">
+        <label>ID do Cliente:</label><br>
+        <label for="clienteInput"></label><input type="text" id="clienteInput" placeholder="ex: C123" />
+        <button id="btnConectar">Conectar</button>
+
+        <div id="clienteStatus" style="margin-top:10px; display:none;">
+            <span class="rich-green">Conectado como:</span>
+            <span id="clienteNome" class="rich-cyan"></span>
+            <button id="btnDesconectar" style="margin-left:10px;">Desconectar</button>
+        </div>
+
+        <div id="clienteMsg" class="msg"></div>
+    </div>
+
+    <!-- ---------------- Criar Leilão ---------------- -->
+    <h2>Criar Leilão</h2>
+
+    <div class="controls">
+        <button id="btnRandom">Criar Evento Aleatório</button>
+        <span class="small">ou preencha o formulário abaixo</span>
+    </div>
+
+    <form id="formLeilao">
+        <label>ID do Leilão:</label><br>
+        <label for="leilao"></label><input type="text" id="leilao"><br>
+
+        <label>Descrição:</label><br>
+        <label for="descricao"></label><input type="text" id="descricao"><br>
+
+        <label>Hora Início (HH:MM):</label><br>
+        <label for="hora_inicio"></label><input type="time" id="hora_inicio"><br>
+
+        <label>Hora Fim (HH:MM):</label><br>
+        <label for="hora_fim"></label><input type="time" id="hora_fim"><br><br>
+
+        <button type="submit">Criar Leilão</button>
+    </form>
+
+    <hr>
+
+    <!-- ---------------- Criar Lance ---------------- -->
+    <h2>Enviar Lance</h2>
+    <form id="formLance">
+        <label>ID do Leilão:</label><br>
+        <label for="id_leilao"></label><input type="text" id="id_leilao"><br>
+
+        <label>Valor:</label><br>
+        <label for="valor"></label><input type="number" id="valor" step="0.01"><br><br>
+
+        <button type="submit">Enviar Lance</button>
+    </form>
+
+    <div id="lanceMsg" class="msg"></div>
+
+    <hr>
+
+    <!-- TABELA DE LEILÕES -->
+    <h2>Leilões Ativos</h2>
+
+    <table id="tabelaLeiloes" class="rich-table">
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Início</th>
+                <th>Fim</th>
+                <th>Status</th>
+                <th>Melhor Lance</th>
+            </tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <hr>
+
+    <!-- TABELA DE LANCES -->
+    <h2>Últimos Lances</h2>
+    <table id="tabelaLances" class="rich-table">
+        <thead>
+            <tr><th>Cliente</th><th>Leilão</th><th>Valor</th><th>Evento</th></tr>
+        </thead>
+        <tbody></tbody>
+    </table>
+
+    <hr>
+
+    <h2>Mensagens SSE</h2>
+    <pre id="sseBox"></pre>
+
+<script>
+// ================= CONFIG =================
+const API = "http://localhost:5000";
+let sse = null;
+let sseClienteId = null;
+let leiloesAtivos = [];
+let interesses = new Set();
+
+// ---------------- utilitários ----------------
+function montaDataCompleta(horaMinuto) {
+    const hoje = new Date();
+    const data = hoje.toISOString().split("T")[0];
+    return `${data} ${horaMinuto}:00`;
+}
+function randomTexto(tam = 10) {
+    const letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    let out = "";
+    for (let i = 0; i < tam; i++) out += letras[Math.floor(Math.random() * letras.length)];
+    return out;
+}
+function randomIdCurto() {
+    const letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    const a = letras[Math.floor(Math.random()*letras.length)];
+    const b = letras[Math.floor(Math.random()*letras.length)];
+    return "R" + a + b;
+}
+function el(id){ return document.getElementById(id); }
+function showCliMsg(text, ok=true){
+    const d = el("clienteMsg"); d.textContent = text; d.className = ok ? "msg ok" : "msg err";
+}
+
+// ---------------- conectar / desconectar UI ----------------
+el("btnConectar").addEventListener("click", () => {
+    const id = el("clienteInput").value.trim();
+    if (!id) { alert("Digite o ID do cliente."); return; }
+    conectarCliente(id);
+});
+el("btnDesconectar").addEventListener("click", () => {
+    desconectarCliente();
+});
+
+function conectarCliente(id){
+    // esconder input, mostrar status
+    el("clienteInput").style.display = "none";
+    el("btnConectar").style.display = "none";
+    el("clienteStatus").style.display = "block";
+    el("clienteNome").textContent = id;
+    sseClienteId = id;
+    showCliMsg("Conectando...", true);
+    connectSSE(id);
+}
+
+function desconectarCliente(){
+    ensureDisconnect();
+    sseClienteId = null;
+    el("clienteInput").style.display = "inline-block";
+    el("btnConectar").style.display = "inline-block";
+    el("clienteStatus").style.display = "none";
+    showCliMsg("Desconectado", false);
+}
+
+// ---------------- criar evento aleatório ----------------
+el("btnRandom").addEventListener("click", async () => {
+    const agora = new Date();
+    const inicio = new Date(agora.getTime() + 10 * 1000);
+    const fim    = new Date(agora.getTime() + 40 * 1000);
+    const fmt = (d) =>
+        `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")} ` +
+        `${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}:${String(d.getSeconds()).padStart(2,"0")}`;
+    const dados = { leilao: randomIdCurto(), descricao: randomTexto(10), inicio: fmt(inicio), fim: fmt(fim) };
+    try {
+        const r = await fetch(API + "/leiloes", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(dados) });
+        if (!r.ok) showCliMsg("Erro criando evento", false);
+        else showCliMsg("Evento criado", true);
+    } catch(err){ console.error(err); showCliMsg("Erro conexão", false); }
+});
+
+// ---------------- criar leilao via form ----------------
+el("formLeilao").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const inicio = montaDataCompleta(el("hora_inicio").value);
+    const fim = montaDataCompleta(el("hora_fim").value);
+    const dados = {
+        leilao: String(el("leilao").value).trim(),
+        descricao: el("descricao").value,
+        inicio, fim
+    };
+    try {
+        const r = await fetch(API + "/leiloes", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(dados) });
+        if (r.ok) showCliMsg("Leilão criado", true);
+        else {
+            const txt = await r.text(); showCliMsg("Erro: " + txt, false);
+        }
+    } catch(err){ console.error(err); showCliMsg("Erro conexão", false); }
+});
+
+// ---------------- enviar lance via form ----------------
+el("formLance").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const cliente = sseClienteId;
+    const leilao  = el("id_leilao").value.trim();
+    const valor   = parseFloat(el("valor").value);
+    if (!cliente) { alert("Conecte com seu ID antes de dar lance."); return; }
+    if (!leilao || isNaN(valor)) { alert("Preencha leilão e valor corretamente."); return; }
+
+    const lancePayload = { cliente: cliente, leilao: leilao, valor: valor };
+
+    try {
+        const r = await fetch(API + "/lances", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(lancePayload) });
+        if (!r.ok) {
+            const txt = await r.text(); el("lanceMsg").textContent = "Erro: " + txt; el("lanceMsg").className="msg err";
+        } else {
+            el("lanceMsg").textContent = "Lance enviado"; el("lanceMsg").className="msg ok";
+        }
+    } catch(err){ console.error(err); el("lanceMsg").textContent = "Erro de conexão"; el("lanceMsg").className="msg err"; }
+
+    // registrar interesse na API Gateway
+    try {
+        await fetch(API + "/interesse", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ cliente: cliente, leilao: leilao }) });
+        interesses.add(leilao);
+    } catch(err){ console.warn("Erro registrar interesse", err); }
+});
+
+// ---------------- polling /leiloes ----------------
+async function atualizarLeiloes() {
+    try {
+        const resp = await fetch(API + "/leiloes");
+        if (!resp.ok) {
+            console.warn("GET /leiloes retornou", resp.status);
+            return;
+        }
+        const ativos = await resp.json();
+
+        // atualizar lista local
+        const novoMapa = {};
+        for (const l of ativos) novoMapa[l.leilao] = l;
+
+        for (const antigo of leiloesAtivos) {
+            const id = antigo.leilao;
+            if (novoMapa[id]) {
+                // Se o backend veio sem melhor_lance mas o SSE já tinha preenchido, preserva
+                if (!novoMapa[id].melhor_lance && antigo.melhor_lance) {
+                    novoMapa[id].melhor_lance = antigo.melhor_lance;
+                }
+            }
+        }
+
+        leiloesAtivos = Object.values(novoMapa);
+
+        renderTabelaLeiloes();
+
+        // detectar leilões removidos e cancelar interesse para o cliente conectado
+        const ativosIDs = new Set(ativos.map(l => l.leilao));
+        for (const lid of Array.from(interesses)) {
+            if (!ativosIDs.has(lid)) {
+                if (sseClienteId) {
+                    try {
+                        await fetch(API + "/interesse", { method: "DELETE", headers: {"Content-Type":"application/json"}, body: JSON.stringify({ cliente: sseClienteId, leilao: lid }) });
+                    } catch(e){ console.warn("erro ao cancelar interesse", e); }
+                }
+                interesses.delete(lid);
+            }
+        }
+
+    } catch(err){ console.error("Erro atualizar leiloes:", err); }
+}
+setInterval(atualizarLeiloes, 2000);
+atualizarLeiloes();
+
+// ---------------- render tabela ----------------
+function renderTabelaLeiloes(){
+    const tbody = document.querySelector("#tabelaLeiloes tbody");
+    tbody.innerHTML = "";
+    for (const l of leiloesAtivos) {
+        const melhor = l.melhor_lance ? ("R$ " + (l.melhor_lance.valor ?? l.melhor_lance)) : "R$ 0";
+        const row = document.createElement("tr");
+        row.innerHTML = `
+            <td class="rich-cyan">${l.leilao}</td>
+            <td class="rich-green">${l.inicio ? l.inicio.slice(-8) : ""}</td>
+            <td class="rich-magenta">${l.fim ? (l.fim.length>=19? l.fim.slice(11,19) : l.fim.slice(-8)) : ""}</td>
+            <td class="rich-yellow">${l.status || ""}</td>
+            <td class="rich-white">${melhor}</td>
+        `;
+        tbody.appendChild(row);
+    }
+}
+
+// ---------------- Simulação de Pagamento ----------------
+async function simularPagamento(transactionId) {
+    const PAYMENT_URL = "http://localhost:5003/webhook";
+
+    const payload = {
+        transaction_id: transactionId,
+        status: "PAGO",
+        info: "Pagamento simulado via interface"
+    };
+
+    try {
+        const r = await fetch(PAYMENT_URL, {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify(payload)
+        });
+
+        if (r.ok) {
+            console.log(`Pagamento simulado com sucesso para transação: ${transactionId}`);
+        } else {
+            console.error(`Erro ao simular pagamento: Status ${r.status}`);
+        }
+    } catch (e) {
+        console.error("Erro de conexão ao simular pagamento:", e);
+    }
+}
+
+// ---------------- SSE ----------------
+function appendSSE(text){
+    const box = el("sseBox");
+    const now = new Date().toLocaleTimeString();
+    box.textContent += `[${now}] ${text}\n`;
+    box.scrollTop = box.scrollHeight;
+}
+function ensureDisconnect(){
+    if (sse) { try { sse.close(); } catch(e){} sse = null; }
+}
+
+function connectSSE(cliente){
+    ensureDisconnect();
+    sse = new EventSource(`${API}/sse/${encodeURIComponent(cliente)}`);
+
+    sse.addEventListener("connected", e => {
+        appendSSE("SSE conectado: " + e.data);
+        showCliMsg("Conectado", true);
+    });
+
+    sse.addEventListener("lance_validado", e => {
+        try {
+            const payload = JSON.parse(e.data);
+            appendSSE("lance_validado -> " + JSON.stringify(payload));
+
+            const lid = String(payload.leilao);
+
+            let found = false;
+            for (let l of leiloesAtivos){
+                if (String(l.leilao) === lid){
+                    l.melhor_lance = payload;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                console.warn(`Leilão ${lid} não encontrado na lista local. Forçando atualização.`);
+                atualizarLeiloes();
+            }
+            renderTabelaLeiloes();
+            addLanceRow(payload.cliente, lid, payload.valor);
+        } catch(err){ console.error("erro parse lance_validado", err); }
+    });
+
+    sse.addEventListener("lance_invalidado", e => {
+        appendSSE("lance_invalido -> " + e.data);
+    });
+
+    sse.addEventListener("leilao_vencedor", e => {
+        try {
+            const v = JSON.parse(e.data);
+            appendSSE("vencedor -> " + JSON.stringify(v));
+
+            const msg = `Leilão ${v.leilao} vencido por ${v.cliente} com R$ ${v.valor}`;
+            showCliMsg(msg, true);
+
+            for (let l of leiloesAtivos){
+                if (String(l.leilao) === String(v.leilao)){
+                    l.status = "encerrado";
+                    l.melhor_lance = v;
+                    addLanceRow(v.cliente, v.leilao, v.valor, "vencedor");
+                }
+            }
+            renderTabelaLeiloes();
+
+        } catch(err){ console.error("erro parse vencedor", err); }
+    });
+
+    sse.addEventListener("link_pagamento", e => {
+        try {
+            const payload = JSON.parse(e.data);
+            appendSSE("link_pagamento -> " + JSON.stringify(payload));
+            const { leilao, transaction_id, link } = payload;
+            const winningRow = document.querySelector(`#tabelaLances tbody tr[data-leilao-id="${leilao}"]`);
+
+            if (winningRow) {
+                const eventCell = winningRow.querySelector('.event-cell');
+                const linkHTML = `
+                    <a href="#" class="rich-green transaction-link"
+                       onclick="event.preventDefault(); simularPagamento('${transaction_id}')">
+                       [Link Pagar]
+                    </a>
+                `;
+                eventCell.dataset.transactionId = transaction_id;
+                winningRow.dataset.transactionId = transaction_id;
+                eventCell.innerHTML += linkHTML;
+            }
+        } catch(err){ console.error("erro parse link_pagamento", err); }
+    });
+
+
+    sse.addEventListener("status_pagamento", e => {
+        try {
+            const payload = JSON.parse(e.data);
+            appendSSE("status_pagamento -> " + JSON.stringify(payload));
+            const { transaction_id, status } = payload;
+            if (status === "PAGO") {
+                alert(`PAGAMENTO CONFIRMADO! \nTransação ID: ${transaction_id}`);
+                const winningRow = document.querySelector(`#tabelaLances tbody tr[data-transaction-id="${transaction_id}"]`);
+                if (winningRow) {
+                    const linkAnchor = winningRow.querySelector('.transaction-link');
+                    if (linkAnchor) linkAnchor.remove();
+                }
+            } else {
+                alert(`Pagamento com status: ${status}. Transação ID: ${transaction_id}`);
+            }
+        } catch(err){
+            console.error("erro parse status_pagamento", err);
+        }
+    });
+
+    sse.onerror = () => {
+        appendSSE("SSE erro/disconnect");
+        ensureDisconnect();
+        sseClienteId = null;
+        el("clienteInput").style.display = "inline-block";
+        el("btnConectar").style.display = "inline-block";
+        el("clienteStatus").style.display = "none";
+        showCliMsg("Desconectado - reconecte", false);
+    };
+}
+
+// ---------------- tabela de lances via SSE ----------------
+function addLanceRow(cliente, leilao, valor, evento="novo_lance", transactionId=null, linkUrl=null){
+    const tbody = document.querySelector("#tabelaLances tbody");
+    const tr = document.createElement("tr");
+    let eventContent = `<span class="rich-magenta">${evento}</span>`;
+
+    if (evento === "vencedor") {
+        eventContent = `<span class="rich-yellow transaction-status" data-leilao-id="${leilao}">Aguardando Pagamento</span>`;
+    }
+    if (transactionId && linkUrl) {
+        eventContent += `
+            <br>
+            <a href="#" class="rich-green transaction-link"
+               onclick="event.preventDefault(); simularPagamento('${transactionId}')">
+               [Link Pagar]
+            </a>
+        `;
+    }
+    tr.innerHTML = `
+        <td class="rich-cyan">${cliente}</td>
+        <td class="rich-green">${leilao}</td>
+        <td class="rich-white">R$ ${valor}</td>
+        <td class="rich-magenta event-cell" data-transaction-id="${transactionId || ''}">${eventContent}</td>
+    `;
+    tr.dataset.leilaoId = leilao;
+    tr.dataset.transactionId = transactionId;
+
+    if (tbody.firstChild) tbody.insertBefore(tr, tbody.firstChild);
+    else tbody.appendChild(tr);
+}
+</script>
+</body>
+</html>
